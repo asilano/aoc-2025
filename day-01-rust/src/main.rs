@@ -1,7 +1,5 @@
-use std::ops::Div;
-
 use input_curler::input_for;
-use num_traits::Euclid;
+use std::ops::Div;
 
 const SAMPLE: &str = "L68
 L30
