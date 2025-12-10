@@ -1,0 +1,8 @@
+[package]
+name = "day-09-rust"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+input_curler = { version = "0.1.0", path = "../input_curler" }
+itertools = "0.14.0"
