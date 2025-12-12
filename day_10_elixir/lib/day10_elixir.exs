@@ -193,14 +193,18 @@ defmodule Simplex do
         end
       end)
 
-    multiple = Enum.at(phase_two_objective_row, pivot_column)
-
     phase_two_objective_row =
-      phase_two_objective_row
-      |> Enum.zip(constraint_rows |> Enum.at(pivot_row))
-      |> Enum.map(fn {old, pivot} ->
-        old - multiple * pivot
-      end)
+      if phase_two_objective_row do
+        multiple = Enum.at(phase_two_objective_row, pivot_column)
+
+        phase_two_objective_row
+        |> Enum.zip(constraint_rows |> Enum.at(pivot_row))
+        |> Enum.map(fn {old, pivot} ->
+          old - multiple * pivot
+        end)
+      else
+        nil
+      end
 
     # |> IO.inspect()
 
@@ -368,7 +372,7 @@ defmodule Day10Elixir do
         end)
         |> Enum.into(%{})
 
-      {_, _, _, values, basis} =
+      {constraint_rows, phase_two_objective_row, _, values, basis} =
         Enum.reduce_while(
           1..1000,
           {constraint_rows, phase_two_objective_row, phase_one_objective_row, values, basis},
@@ -392,6 +396,46 @@ defmodule Day10Elixir do
           end
         )
         |> IO.inspect(label: "Two")
+
+      constraint_rows =
+        constraint_rows
+        |> Enum.map(fn row ->
+          Enum.take(row, button_count)
+        end)
+
+      phase_two_objective_row = Enum.take(phase_two_objective_row, button_count)
+      values = Enum.take(values, length(values) - 1)
+
+      basis =
+        basis
+        |> Enum.reject(fn {_, col} ->
+          col >= button_count
+        end)
+        |> Enum.into(%{})
+
+      {constraint_rows, phase_two_objective_row, values, basis} =
+        Enum.reduce_while(
+          1..1000,
+          {constraint_rows, phase_two_objective_row, values, basis},
+          fn _, {constraint_rows, phase_two_objective_row, values, basis} ->
+            if Enum.all?(phase_two_objective_row, &(&1 <= 0)) do
+              IO.inspect(values, label: "Values")
+
+              {:halt, {constraint_rows, phase_two_objective_row, values, basis}}
+            else
+              {constraint_rows, _, phase_two_objective_row, values, basis} =
+                Simplex.part_two_step(
+                  constraint_rows,
+                  nil,
+                  phase_two_objective_row,
+                  values,
+                  basis
+                )
+
+              {:cont, {constraint_rows, phase_two_objective_row, values, basis}}
+            end
+          end
+        )
 
       values |> Enum.reverse() |> Enum.drop(1) |> Enum.at(0)
     end)
