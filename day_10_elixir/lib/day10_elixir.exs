@@ -140,7 +140,7 @@ defmodule Simplex do
       |> Enum.map(&Enum.at(&1, pivot_column))
       |> Enum.zip(values)
       |> Enum.with_index()
-      |> Enum.filter(fn {{entry, value}, _} -> entry > 0 && value > 0 end)
+      |> Enum.filter(fn {{entry, value}, _} -> entry > 0 && value >= 0 end)
       |> tap(fn row ->
         if length(row) == 0,
           do: IO.inspect({phase_one_objective_row, pivot_column, constraint_rows}, label: "One")
@@ -193,25 +193,23 @@ defmodule Simplex do
         end
       end)
 
-    phase_two_objective_row =
+    {phase_two_objective_row, values} =
       if phase_two_objective_row do
         multiple = Enum.at(phase_two_objective_row, pivot_column)
 
-        phase_two_objective_row
-        |> Enum.zip(constraint_rows |> Enum.at(pivot_row))
-        |> Enum.map(fn {old, pivot} ->
-          old - multiple * pivot
-        end)
+        {phase_two_objective_row
+         |> Enum.zip(constraint_rows |> Enum.at(pivot_row))
+         |> Enum.map(fn {old, pivot} ->
+           old - multiple * pivot
+         end),
+         List.update_at(values, length(values) - 2, fn old ->
+           old - multiple * Enum.at(values, pivot_row)
+         end)}
       else
-        nil
+        {nil, values}
       end
 
     # |> IO.inspect()
-
-    values =
-      List.update_at(values, length(constraint_rows), fn old ->
-        old - multiple * Enum.at(values, pivot_row)
-      end)
 
     multiple = Enum.at(phase_one_objective_row, pivot_column)
 
@@ -225,7 +223,7 @@ defmodule Simplex do
     # |> IO.inspect()
 
     values =
-      List.update_at(values, length(constraint_rows) + 1, fn old ->
+      List.update_at(values, length(values) - 1, fn old ->
         old - multiple * Enum.at(values, pivot_row)
       end)
 
@@ -236,6 +234,86 @@ defmodule Simplex do
     # |> IO.inspect()
 
     {constraint_rows, phase_two_objective_row, phase_one_objective_row, values, basis_columns}
+  end
+
+  def dual_step(constraint_rows, objective_row, values, basis_columns_by_row) do
+    # Pivot on the newly-added constraint row
+    pivot_row = length(constraint_rows) - 1
+    gomory_row_row = List.last(constraint_rows) |> IO.inspect(label: "Gomory")
+
+    pivot_column =
+      objective_row
+      |> IO.inspect(label: "Objective")
+      |> Enum.with_index()
+      |> Enum.reject(fn {_, ix} -> Enum.at(gomory_row_row, ix) == 0 end)
+      |> Enum.min_by(fn {obj_val, ix} -> -obj_val / Enum.at(gomory_row_row, ix) end)
+      |> elem(1)
+
+    # IO.inspect({pivot_row, pivot_column})
+
+    quotient = Enum.at(gomory_row_row, pivot_column)
+
+    constraint_rows =
+      List.update_at(constraint_rows, pivot_row, fn row ->
+        Enum.map(row, &(&1 / quotient))
+      end)
+
+    values = List.update_at(values, pivot_row, &(&1 / quotient))
+
+    constraint_multiples = constraint_rows |> Enum.map(&Enum.at(&1, pivot_column))
+
+    constraint_rows =
+      constraint_rows
+      |> Enum.zip(constraint_multiples)
+      |> Enum.with_index()
+      |> Enum.map(fn {{row, multiple}, ix} ->
+        if ix == pivot_row do
+          row
+        else
+          row
+          |> Enum.zip(constraint_rows |> Enum.at(pivot_row))
+          |> Enum.map(fn {old, pivot} ->
+            old - multiple * pivot
+          end)
+        end
+      end)
+
+    # |> tap(fn row -> Enum.each(row, fn val -> IO.inspect(val, label: "A row") end) end)
+
+    values =
+      constraint_multiples
+      |> Enum.with_index()
+      |> Enum.reduce(values, fn {multiple, ix}, vals ->
+        if ix == pivot_row do
+          vals
+        else
+          vals |> List.update_at(ix, fn old -> old - multiple * Enum.at(values, pivot_row) end)
+        end
+      end)
+
+    multiple = Enum.at(objective_row, pivot_column)
+
+    objective_row =
+      objective_row
+      |> Enum.zip(constraint_rows |> Enum.at(pivot_row))
+      |> Enum.map(fn {old, pivot} ->
+        old - multiple * pivot
+      end)
+
+    # |> IO.inspect()
+
+    values =
+      List.update_at(values, length(values) - 1, fn old ->
+        old - multiple * Enum.at(values, pivot_row)
+      end)
+
+    # IO.inspect(values)
+
+    basis_columns = basis_columns_by_row |> Map.replace(pivot_row, pivot_column)
+
+    # |> IO.inspect()
+
+    {constraint_rows, objective_row, values, basis_columns}
   end
 end
 
@@ -332,11 +410,14 @@ defmodule Day10Elixir do
 
   def part_two(data) do
     parse(data)
-    |> Enum.map(fn %{toggles: toggles, joltages: jolts} ->
+    |> Enum.with_index()
+    |> Enum.map(fn {%{toggles: toggles, joltages: jolts}, data_row} ->
+      IO.puts("")
       button_count = length(toggles)
       constraint_count = length(jolts)
       objective = List.duplicate(-1, button_count)
 
+      # Prepare for phase 1 - finding a feasible solution due to equality constraints
       constraint_rows =
         jolts
         |> Enum.with_index()
@@ -372,6 +453,7 @@ defmodule Day10Elixir do
         end)
         |> Enum.into(%{})
 
+      # Execute phase one
       {constraint_rows, phase_two_objective_row, _, values, basis} =
         Enum.reduce_while(
           1..1000,
@@ -379,8 +461,6 @@ defmodule Day10Elixir do
           fn _,
              {constraint_rows, phase_two_objective_row, phase_one_objective_row, values, basis} ->
             if Enum.all?(phase_one_objective_row, &(&1 <= 0)) do
-              IO.inspect(values, label: "Values")
-
               {:halt,
                {constraint_rows, phase_two_objective_row, phase_one_objective_row, values, basis}}
             else
@@ -395,8 +475,9 @@ defmodule Day10Elixir do
             end
           end
         )
-        |> IO.inspect(label: "Two")
+        |> IO.inspect(label: "Feasible, inoptimal solution")
 
+      # Remove phase one portions and prepare for phase 2
       constraint_rows =
         constraint_rows
         |> Enum.map(fn row ->
@@ -413,14 +494,13 @@ defmodule Day10Elixir do
         end)
         |> Enum.into(%{})
 
+      # Execute phase two
       {constraint_rows, phase_two_objective_row, values, basis} =
         Enum.reduce_while(
           1..1000,
           {constraint_rows, phase_two_objective_row, values, basis},
           fn _, {constraint_rows, phase_two_objective_row, values, basis} ->
             if Enum.all?(phase_two_objective_row, &(&1 <= 0)) do
-              IO.inspect(values, label: "Values")
-
               {:halt, {constraint_rows, phase_two_objective_row, values, basis}}
             else
               {constraint_rows, _, phase_two_objective_row, values, basis} =
@@ -436,8 +516,58 @@ defmodule Day10Elixir do
             end
           end
         )
+        |> IO.inspect(label: "Optimal, infeasible solution")
 
-      values |> Enum.reverse() |> Enum.drop(1) |> Enum.at(0)
+      # Check if optimal solution is feasible due to integer constraints
+      {constraint_rows, phase_two_objective_row, values, basis} =
+        Enum.reduce_while(
+          1..1000,
+          {constraint_rows, phase_two_objective_row, values, basis},
+          fn _, {constraint_rows, phase_two_objective_row, values, basis} ->
+            variable_values =
+              0..(button_count - 1)
+              |> Enum.map(fn ix ->
+                constraint = Map.get(basis, ix)
+
+                if constraint >= length(constraint_rows) do
+                  0
+                else
+                  Enum.at(values, constraint, 0)
+                end
+              end)
+
+            if Enum.all?(variable_values, &(abs(&1 - round(&1)) <= 1.0e-10)) do
+              {:halt, {constraint_rows, phase_two_objective_row, values, basis}}
+            else
+              raise "boom"
+
+              infeasible_var =
+                Enum.find_index(variable_values, &(abs(&1 - round(&1)) > 1.0e-10))
+                |> IO.inspect(label: "Infeasible var")
+
+              infeasible_row =
+                Map.get(basis, infeasible_var)
+                |> IO.inspect(label: "Infeasible row")
+
+              new_row =
+                (constraint_rows
+                 |> Enum.at(infeasible_row)
+                 |> Enum.map(fn cell ->
+                   cell - floor(cell)
+                 end)) ++ [1]
+
+              old_value = Enum.at(values, infeasible_row)
+              new_value = old_value - floor(old_value)
+              values = values |> List.insert_at(length(constraint_rows), new_value)
+              constraint_rows = Enum.map(constraint_rows, &(&1 ++ [0])) ++ [new_row]
+              phase_two_objective_row = phase_two_objective_row ++ [0]
+
+              {:cont, Simplex.dual_step(constraint_rows, phase_two_objective_row, values, basis)}
+            end
+          end
+        )
+
+      values |> List.last() |> IO.inspect(label: "Solved integer value")
     end)
     |> Enum.sum()
   end
@@ -478,10 +608,10 @@ defmodule Day10Elixir do
   end
 end
 
-sample =
-  "[.##.] (3) (1,3) (2) (2,3) (0,2) (0,1) {3,5,4,7}
-[...#.] (0,2,3,4) (2,3) (0,4) (0,1,2) (1,2,3,4) {7,5,12,7,2}
-[.###.#] (0,1,2,3,4) (0,3,4) (0,1,2,4,5) (1,2) {10,11,11,5,10,5}"
+# sample =
+#   "[.##.] (3) (1,3) (2) (2,3) (0,2) (0,1) {3,5,4,7}
+# [...#.] (0,2,3,4) (2,3) (0,4) (0,1,2) (1,2,3,4) {7,5,12,7,2}
+# [.###.#] (0,1,2,3,4) (0,3,4) (0,1,2,4,5) (1,2) {10,11,11,5,10,5}"
 
 %{
   [0, 1, 2] => 5,
@@ -495,8 +625,30 @@ sample =
 
 data = ElixirInputCurler.input_for(10)
 
-IO.puts("Sample one: #{Day10Elixir.part_one(sample)}")
-IO.puts("Answer one: #{Day10Elixir.part_one(data)}")
+sample =
+  "[#...##..#] (0,1,3,6,7) (0,1,4,6,7) (0,1,5,6,7,8) (0,1,3,5,7,8) (2,5) (1,4,8) (1,4,5,7,8) (3,5) (1,3,4,8) (0,2,3,4,5,7,8) (0,1,4,5,6,7,8) {38,59,4,35,41,34,31,46,43}"
+
+#   %{0 => 7, 1 => 6, 2 => 9, 3 => 3, 4 => 2, 5 => 1, 6 => 0, 7 => 4, 8 => 10}
+#  [6.2, 3.2, 4.2, 1.6, 13.8, 0.8, 14.2, 8.0, 12.6, 64.6],
+#    7    6    9    3     2    1     0    4    10
+
+# 0  (0,1,4,5,6,7,8)
+# 1  (0,2,3,4,5,7,8)
+# 2  (1,3,4,8)
+# 3  (3,5)
+# 4  (1,4,5,7,8)
+# 5  (1,4,8)
+# 6  (2,5)
+# 7  (0,1,3,5,7,8)
+# 8  (0,1,5,6,7,8)
+# 9  (0,1,4,6,7)
+# 10 (0,1,3,6,7)
+
+# 0     1     2     3     4     5     6     7     8
+# 0     0     0     0     0     0     0     0     0
+
+# IO.puts("Sample one: #{Day10Elixir.part_one(sample)}")
+# IO.puts("Answer one: #{Day10Elixir.part_one(data)}")
 IO.puts("Sample two: #{Day10Elixir.part_two(sample)}")
 # IO.puts("Answer two: #{Day10Elixir.part_two(data)}")
 
@@ -527,3 +679,7 @@ IO.puts("Sample two: #{Day10Elixir.part_two(sample)}")
 #   6
 # )
 # |> IO.inspect()
+
+{:feasible, 20339}
+{:tried, 20000}
+{:optimal, 19893}
