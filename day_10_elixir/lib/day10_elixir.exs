@@ -1,322 +1,5 @@
 Mix.install([{:elixir_input_curler, path: "../elixir_input_curler"}])
 
-defmodule Simplex do
-  def maximise(objective, constraints, num_variables) do
-    constraints =
-      constraints
-      |> Enum.map(fn {coeffs, type, limit} ->
-        case type do
-          :at_most -> {coeffs, limit}
-        end
-      end)
-
-    num_constraints = length(constraints)
-    objective = [1 | objective ++ List.duplicate(0, num_constraints + 1)]
-
-    constraints =
-      constraints
-      |> Enum.with_index()
-      |> Enum.map(fn {{coeffs, limit}, ix} ->
-        [
-          0
-          | coeffs ++ (List.duplicate(0, num_constraints) |> List.replace_at(ix, 1)) ++ [limit]
-        ]
-      end)
-
-    tableau = [objective | constraints]
-    nonbasic_columns = 1..num_variables |> Enum.map(& &1)
-
-    Enum.reduce_while(1..1000, {tableau, nonbasic_columns}, fn _, {tab, nonbasis} ->
-      objective = Enum.at(tab, 0)
-
-      if tab |> Enum.at(0) |> Enum.drop(1) |> Enum.all?(&(&1 <= 0)) do
-        max = -1 * (tab |> Enum.at(0) |> List.last())
-
-        variables =
-          nonbasic_columns
-          |> Enum.map(fn col ->
-            value =
-              tab
-              |> Enum.drop(1)
-              |> Enum.find([], fn row ->
-                Enum.at(row, col) == 1
-              end)
-              |> List.last(0)
-
-            {col, value}
-          end)
-
-        {:halt, {max, variables, objective, nonbasis, tableau}}
-      else
-        {:cont, step(tab, nonbasis)}
-      end
-    end)
-  end
-
-  def minimise(objective, constraints, num_variables) do
-    dual_objective = constraints |> Enum.map(fn {_, _, limit} -> limit end)
-
-    dual_constraints =
-      0..(num_variables - 1)
-      |> Enum.map(fn variable ->
-        {
-          constraints |> Enum.map(fn {coeffs, _, _} -> Enum.at(coeffs, variable) end),
-          :at_most,
-          Enum.at(objective, variable)
-        }
-      end)
-
-    dual_variables = length(constraints)
-
-    {minimum, _, dual_objective, non_basis, _} =
-      maximise(dual_objective, dual_constraints, dual_variables)
-
-    {minimum,
-     non_basis
-     |> Enum.filter(&(&1 - dual_variables - 1 >= 0))
-     |> Enum.map(fn col -> {col - dual_variables - 1, -Enum.at(dual_objective, col)} end)}
-  end
-
-  defp step(tableau, nonbasic_columns) do
-    new_basic_column =
-      tableau
-      |> Enum.at(0)
-      |> Enum.with_index()
-      |> Enum.filter(fn {_, ix} -> ix in nonbasic_columns end)
-      |> Enum.max_by(fn {val, _} -> val end)
-      |> elem(1)
-
-    {old_basic_row, row_ix} =
-      tableau
-      |> Enum.with_index()
-      |> Enum.drop(1)
-      |> Enum.reject(fn {row, _} -> Enum.at(row, new_basic_column) <= 0 end)
-      |> Enum.min_by(fn {row, _} ->
-        List.last(row) / Enum.at(row, new_basic_column)
-      end)
-
-    quotient = Enum.at(old_basic_row, new_basic_column)
-
-    replacement_row =
-      Enum.map(old_basic_row, &(&1 / quotient))
-
-    tableau = List.replace_at(tableau, row_ix, replacement_row)
-
-    tableau =
-      0..(length(tableau) - 1)
-      |> Enum.reject(&(&1 == row_ix))
-      |> Enum.reduce(tableau, fn mod_row_ix, tab ->
-        List.update_at(tab, mod_row_ix, fn mod_row ->
-          multiple = Enum.at(mod_row, new_basic_column)
-          Enum.zip(mod_row, replacement_row) |> Enum.map(fn {m, r} -> m - multiple * r end)
-        end)
-      end)
-
-    nonbasic_columns =
-      1..((tableau |> Enum.at(0) |> length()) - 2)
-      |> Enum.filter(fn ix ->
-        tableau |> Enum.at(0) |> Enum.at(ix) != 0
-      end)
-
-    {tableau, nonbasic_columns}
-  end
-
-  def part_two_step(
-        constraint_rows,
-        phase_two_objective_row,
-        phase_one_objective_row,
-        values,
-        basis_columns_by_row
-      ) do
-    pivot_column =
-      phase_one_objective_row
-      |> Enum.with_index()
-      |> Enum.reject(fn {_, ix} -> ix in Map.values(basis_columns_by_row) end)
-      |> Enum.max_by(&elem(&1, 0))
-      |> elem(1)
-
-    pivot_row =
-      constraint_rows
-      |> Enum.map(&Enum.at(&1, pivot_column))
-      |> Enum.zip(values)
-      |> Enum.with_index()
-      |> Enum.filter(fn {{entry, value}, _} -> entry > 0 && value >= 0 end)
-      |> tap(fn row ->
-        if length(row) == 0,
-          do: IO.inspect({phase_one_objective_row, pivot_column, constraint_rows}, label: "One")
-      end)
-      |> Enum.min_by(fn {{entry, value}, _} -> value / entry end)
-      |> elem(1)
-
-    # IO.inspect({pivot_row, pivot_column})
-
-    quotient = Enum.at(Enum.at(constraint_rows, pivot_row), pivot_column)
-
-    # if values |> Enum.at(pivot_row) |> rem(quotient) != 0,
-    #   do: raise("Pivot cell not divisor of value")
-
-    constraint_rows =
-      List.update_at(constraint_rows, pivot_row, fn row ->
-        Enum.map(row, &(&1 / quotient))
-      end)
-
-    values = List.update_at(values, pivot_row, &(&1 / quotient))
-
-    constraint_multiples = constraint_rows |> Enum.map(&Enum.at(&1, pivot_column))
-
-    constraint_rows =
-      constraint_rows
-      |> Enum.zip(constraint_multiples)
-      |> Enum.with_index()
-      |> Enum.map(fn {{row, multiple}, ix} ->
-        if ix == pivot_row do
-          row
-        else
-          row
-          |> Enum.zip(constraint_rows |> Enum.at(pivot_row))
-          |> Enum.map(fn {old, pivot} ->
-            old - multiple * pivot
-          end)
-        end
-      end)
-
-    # |> tap(fn row -> Enum.each(row, fn val -> IO.inspect(val, label: "A row") end) end)
-
-    values =
-      constraint_multiples
-      |> Enum.with_index()
-      |> Enum.reduce(values, fn {multiple, ix}, vals ->
-        if ix == pivot_row do
-          vals
-        else
-          vals |> List.update_at(ix, fn old -> old - multiple * Enum.at(values, pivot_row) end)
-        end
-      end)
-
-    {phase_two_objective_row, values} =
-      if phase_two_objective_row do
-        multiple = Enum.at(phase_two_objective_row, pivot_column)
-
-        {phase_two_objective_row
-         |> Enum.zip(constraint_rows |> Enum.at(pivot_row))
-         |> Enum.map(fn {old, pivot} ->
-           old - multiple * pivot
-         end),
-         List.update_at(values, length(values) - 2, fn old ->
-           old - multiple * Enum.at(values, pivot_row)
-         end)}
-      else
-        {nil, values}
-      end
-
-    # |> IO.inspect()
-
-    multiple = Enum.at(phase_one_objective_row, pivot_column)
-
-    phase_one_objective_row =
-      phase_one_objective_row
-      |> Enum.zip(constraint_rows |> Enum.at(pivot_row))
-      |> Enum.map(fn {old, pivot} ->
-        old - multiple * pivot
-      end)
-
-    # |> IO.inspect()
-
-    values =
-      List.update_at(values, length(values) - 1, fn old ->
-        old - multiple * Enum.at(values, pivot_row)
-      end)
-
-    # IO.inspect(values)
-
-    basis_columns = basis_columns_by_row |> Map.replace(pivot_row, pivot_column)
-
-    # |> IO.inspect()
-
-    {constraint_rows, phase_two_objective_row, phase_one_objective_row, values, basis_columns}
-  end
-
-  def dual_step(constraint_rows, objective_row, values, basis_columns_by_row) do
-    # Pivot on the newly-added constraint row
-    pivot_row = length(constraint_rows) - 1
-    gomory_row_row = List.last(constraint_rows) |> IO.inspect(label: "Gomory")
-
-    pivot_column =
-      objective_row
-      |> IO.inspect(label: "Objective")
-      |> Enum.with_index()
-      |> Enum.reject(fn {_, ix} -> Enum.at(gomory_row_row, ix) == 0 end)
-      |> Enum.min_by(fn {obj_val, ix} -> -obj_val / Enum.at(gomory_row_row, ix) end)
-      |> elem(1)
-
-    # IO.inspect({pivot_row, pivot_column})
-
-    quotient = Enum.at(gomory_row_row, pivot_column)
-
-    constraint_rows =
-      List.update_at(constraint_rows, pivot_row, fn row ->
-        Enum.map(row, &(&1 / quotient))
-      end)
-
-    values = List.update_at(values, pivot_row, &(&1 / quotient))
-
-    constraint_multiples = constraint_rows |> Enum.map(&Enum.at(&1, pivot_column))
-
-    constraint_rows =
-      constraint_rows
-      |> Enum.zip(constraint_multiples)
-      |> Enum.with_index()
-      |> Enum.map(fn {{row, multiple}, ix} ->
-        if ix == pivot_row do
-          row
-        else
-          row
-          |> Enum.zip(constraint_rows |> Enum.at(pivot_row))
-          |> Enum.map(fn {old, pivot} ->
-            old - multiple * pivot
-          end)
-        end
-      end)
-
-    # |> tap(fn row -> Enum.each(row, fn val -> IO.inspect(val, label: "A row") end) end)
-
-    values =
-      constraint_multiples
-      |> Enum.with_index()
-      |> Enum.reduce(values, fn {multiple, ix}, vals ->
-        if ix == pivot_row do
-          vals
-        else
-          vals |> List.update_at(ix, fn old -> old - multiple * Enum.at(values, pivot_row) end)
-        end
-      end)
-
-    multiple = Enum.at(objective_row, pivot_column)
-
-    objective_row =
-      objective_row
-      |> Enum.zip(constraint_rows |> Enum.at(pivot_row))
-      |> Enum.map(fn {old, pivot} ->
-        old - multiple * pivot
-      end)
-
-    # |> IO.inspect()
-
-    values =
-      List.update_at(values, length(values) - 1, fn old ->
-        old - multiple * Enum.at(values, pivot_row)
-      end)
-
-    # IO.inspect(values)
-
-    basis_columns = basis_columns_by_row |> Map.replace(pivot_row, pivot_column)
-
-    # |> IO.inspect()
-
-    {constraint_rows, objective_row, values, basis_columns}
-  end
-end
-
 defmodule Day10Elixir do
   def part_one(data) do
     parse(data)
@@ -329,8 +12,8 @@ defmodule Day10Elixir do
       |> Enum.map(fn presses ->
         presses
         |> Integer.to_string(2)
+        |> String.pad_leading(num_toggles, "0")
         |> String.codepoints()
-        |> Enum.reverse()
       end)
       |> Enum.filter(fn presses ->
         presses
@@ -353,223 +36,73 @@ defmodule Day10Elixir do
     |> Enum.sum()
   end
 
-  # def part_two(data) do
-  #   parse(data)
-  #   |> Enum.map(fn %{toggles: toggles, joltages: jolts} ->
-  #     button_count = length(toggles)
-  #     objective = List.duplicate(1, button_count)
-
-  #     constraints =
-  #       jolts
-  #       |> Enum.with_index()
-  #       |> Enum.map(fn {value, ix} ->
-  #         {
-  #           toggles
-  #           |> Enum.map(fn controlled ->
-  #             if ix in controlled, do: 1, else: 0
-  #           end),
-  #           :at_least,
-  #           value
-  #         }
-  #       end)
-
-  #     {minimum, variables} =
-  #       Simplex.minimise(objective, constraints, button_count)
-
-  #     # variables
-  #     # |> Enum.map(fn {k, v} -> {Enum.at(toggles, k), v} end)
-  #     # |> Enum.into(%{})
-
-  #     variables = variables |> Enum.map(fn {k, v} -> {k, trunc(v)} end) |> Enum.into(%{})
-
-  #     toggles
-  #     |> Enum.with_index()
-  #     |> Enum.map(fn {tog, ix} ->
-  #       {tog, Map.get(variables, ix, 0)}
-  #     end)
-  #     |> Enum.into(%{})
-
-  #     satisfaction =
-  #       Enum.map(constraints, fn {coeffs, _, value} ->
-  #         {coeffs
-  #          |> Enum.with_index()
-  #          |> Enum.map(fn {c, ix} -> c * Map.get(variables, ix, 0) end)
-  #          |> Enum.sum(), value}
-  #       end)
-
-  #     if Enum.any?(satisfaction, fn {result, target} -> result != target end) do
-  #       IO.inspect(toggles)
-  #       IO.inspect(satisfaction)
-  #       IO.puts("")
-  #     end
-
-  #     minimum
-  #   end)
-  #   |> Enum.sum()
-  # end
-
   def part_two(data) do
     parse(data)
-    |> Enum.with_index()
-    |> Enum.map(fn {%{toggles: toggles, joltages: jolts}, data_row} ->
-      IO.puts("")
-      button_count = length(toggles)
-      constraint_count = length(jolts)
-      objective = List.duplicate(-1, button_count)
+    |> Enum.map(fn %{toggles: toggles, joltages: joltages} ->
+      num_toggles = length(toggles)
+      num_jolts = length(joltages)
 
-      # Prepare for phase 1 - finding a feasible solution due to equality constraints
-      constraint_rows =
-        jolts
-        |> Enum.with_index()
-        |> Enum.map(fn {value, ix} ->
-          (toggles
-           |> Enum.map(fn controlled ->
-             if ix in controlled, do: 1, else: 0
-           end)) ++
-            (List.duplicate(0, constraint_count) |> List.replace_at(ix, 1))
-        end)
+      # Build dictionary of what pressing each combination of buttons (once) gets you, hashed by parity
+      pattern_dictionary =
+        0..(2 ** num_toggles - 1)
+        |> Enum.reduce(%{}, fn binary_presses, dict ->
+          presses_as_chars =
+            binary_presses
+            |> Integer.to_string(2)
+            |> String.pad_leading(num_toggles, "0")
+            |> String.codepoints()
 
-      phase_one_objective_row =
-        (List.duplicate(0, button_count) ++ List.duplicate(-1, constraint_count) ++ [0])
-        |> then(fn obj ->
-          constraint_rows
-          |> Enum.reduce(obj, fn row, obj ->
-            obj |> Enum.zip(row) |> Enum.map(fn {a, b} -> a + b end)
+          num_presses = presses_as_chars |> Enum.count(&(&1 == "1"))
+
+          result =
+            presses_as_chars
+            |> Enum.with_index()
+            |> Enum.filter(fn {yn, _} -> yn == "1" end)
+            |> Enum.reduce(List.duplicate(0, num_jolts), fn {_, ix}, jolts ->
+              toggles
+              |> Enum.at(ix)
+              |> Enum.reduce(jolts, fn inc, jolts ->
+                List.update_at(jolts, inc, &(&1 + 1))
+              end)
+            end)
+
+          parity = Enum.map(result, &rem(&1, 2))
+
+          dict = if Map.has_key?(dict, parity), do: dict, else: Map.put(dict, parity, %{})
+
+          Map.update!(dict, parity, fn patterns ->
+            Map.update(patterns, result, num_presses, fn old ->
+              if old <= num_presses, do: old, else: num_presses
+            end)
           end)
         end)
 
-      phase_two_objective_row = objective ++ List.duplicate(0, constraint_count) ++ [0]
-
-      values = jolts ++ [0, Enum.sum(jolts)]
-
-      # IO.inspect(phase_one_objective_row)
-      # IO.inspect(phase_two_objective_row)
-      # constraint_rows |> Enum.each(&IO.inspect/1)
-      # IO.inspect(values)
-      basis =
-        0..(constraint_count - 1)
-        |> Enum.map(fn ix ->
-          {ix, button_count + ix - 1}
-        end)
-        |> Enum.into(%{})
-
-      # Execute phase one
-      {constraint_rows, phase_two_objective_row, _, values, basis} =
-        Enum.reduce_while(
-          1..1000,
-          {constraint_rows, phase_two_objective_row, phase_one_objective_row, values, basis},
-          fn _,
-             {constraint_rows, phase_two_objective_row, phase_one_objective_row, values, basis} ->
-            if Enum.all?(phase_one_objective_row, &(&1 <= 0)) do
-              {:halt,
-               {constraint_rows, phase_two_objective_row, phase_one_objective_row, values, basis}}
-            else
-              {:cont,
-               Simplex.part_two_step(
-                 constraint_rows,
-                 phase_two_objective_row,
-                 phase_one_objective_row,
-                 values,
-                 basis
-               )}
-            end
-          end
-        )
-        |> IO.inspect(label: "Feasible, inoptimal solution")
-
-      # Remove phase one portions and prepare for phase 2
-      constraint_rows =
-        constraint_rows
-        |> Enum.map(fn row ->
-          Enum.take(row, button_count)
-        end)
-
-      phase_two_objective_row = Enum.take(phase_two_objective_row, button_count)
-      values = Enum.take(values, length(values) - 1)
-
-      basis =
-        basis
-        |> Enum.reject(fn {_, col} ->
-          col >= button_count
-        end)
-        |> Enum.into(%{})
-
-      # Execute phase two
-      {constraint_rows, phase_two_objective_row, values, basis} =
-        Enum.reduce_while(
-          1..1000,
-          {constraint_rows, phase_two_objective_row, values, basis},
-          fn _, {constraint_rows, phase_two_objective_row, values, basis} ->
-            if Enum.all?(phase_two_objective_row, &(&1 <= 0)) do
-              {:halt, {constraint_rows, phase_two_objective_row, values, basis}}
-            else
-              {constraint_rows, _, phase_two_objective_row, values, basis} =
-                Simplex.part_two_step(
-                  constraint_rows,
-                  nil,
-                  phase_two_objective_row,
-                  values,
-                  basis
-                )
-
-              {:cont, {constraint_rows, phase_two_objective_row, values, basis}}
-            end
-          end
-        )
-        |> IO.inspect(label: "Optimal, infeasible solution")
-
-      # Check if optimal solution is feasible due to integer constraints
-      {constraint_rows, phase_two_objective_row, values, basis} =
-        Enum.reduce_while(
-          1..1000,
-          {constraint_rows, phase_two_objective_row, values, basis},
-          fn _, {constraint_rows, phase_two_objective_row, values, basis} ->
-            variable_values =
-              0..(button_count - 1)
-              |> Enum.map(fn ix ->
-                constraint = Map.get(basis, ix)
-
-                if constraint >= length(constraint_rows) do
-                  0
-                else
-                  Enum.at(values, constraint, 0)
-                end
-              end)
-
-            if Enum.all?(variable_values, &(abs(&1 - round(&1)) <= 1.0e-10)) do
-              {:halt, {constraint_rows, phase_two_objective_row, values, basis}}
-            else
-              raise "boom"
-
-              infeasible_var =
-                Enum.find_index(variable_values, &(abs(&1 - round(&1)) > 1.0e-10))
-                |> IO.inspect(label: "Infeasible var")
-
-              infeasible_row =
-                Map.get(basis, infeasible_var)
-                |> IO.inspect(label: "Infeasible row")
-
-              new_row =
-                (constraint_rows
-                 |> Enum.at(infeasible_row)
-                 |> Enum.map(fn cell ->
-                   cell - floor(cell)
-                 end)) ++ [1]
-
-              old_value = Enum.at(values, infeasible_row)
-              new_value = old_value - floor(old_value)
-              values = values |> List.insert_at(length(constraint_rows), new_value)
-              constraint_rows = Enum.map(constraint_rows, &(&1 ++ [0])) ++ [new_row]
-              phase_two_objective_row = phase_two_objective_row ++ [0]
-
-              {:cont, Simplex.dual_step(constraint_rows, phase_two_objective_row, values, basis)}
-            end
-          end
-        )
-
-      values |> List.last() |> IO.inspect(label: "Solved integer value")
+      min_presses_for(joltages, pattern_dictionary)
     end)
     |> Enum.sum()
+  end
+
+  defp min_presses_for(target, pattern_dictionary) do
+    if Enum.all?(target, &(&1 == 0)) do
+      0
+    else
+      target_parity = Enum.map(target, &rem(&1, 2))
+
+      if !Map.has_key?(pattern_dictionary, target_parity) do
+        10000
+      else
+        pattern_dictionary
+        |> Map.get(target_parity)
+        |> Enum.reduce(10000, fn {pattern, num_presses}, best ->
+          if target |> Enum.zip(pattern) |> Enum.any?(fn {t, p} -> t < p end) do
+            best
+          else
+            new_target = target |> Enum.zip(pattern) |> Enum.map(fn {t, p} -> div(t - p, 2) end)
+            min(best, num_presses + min_presses_for(new_target, pattern_dictionary) * 2)
+          end
+        end)
+      end
+    end
   end
 
   defp parse(data) do
@@ -592,6 +125,7 @@ defmodule Day10Elixir do
 
       toggles =
         rest
+        |> Enum.reverse()
         |> Enum.map(fn toggle ->
           Regex.scan(~r"\d+", toggle) |> Enum.map(fn [n] -> String.to_integer(n) end)
         end)
@@ -608,78 +142,14 @@ defmodule Day10Elixir do
   end
 end
 
-# sample =
-#   "[.##.] (3) (1,3) (2) (2,3) (0,2) (0,1) {3,5,4,7}
-# [...#.] (0,2,3,4) (2,3) (0,4) (0,1,2) (1,2,3,4) {7,5,12,7,2}
-# [.###.#] (0,1,2,3,4) (0,3,4) (0,1,2,4,5) (1,2) {10,11,11,5,10,5}"
-
-%{
-  [0, 1, 2] => 5,
-  [0, 2, 3, 4] => 2,
-  [0, 4] => 0,
-  [1, 2, 3, 4] => 0,
-  [2, 3] => 5
-}
-
-[{7, 7}, {5, 5}, {12, 12}, {7, 7}, {2, 2}]
+sample =
+  "[.##.] (3) (1,3) (2) (2,3) (0,2) (0,1) {3,5,4,7}
+[...#.] (0,2,3,4) (2,3) (0,4) (0,1,2) (1,2,3,4) {7,5,12,7,2}
+[.###.#] (0,1,2,3,4) (0,3,4) (0,1,2,4,5) (1,2) {10,11,11,5,10,5}"
 
 data = ElixirInputCurler.input_for(10)
 
-sample =
-  "[#...##..#] (0,1,3,6,7) (0,1,4,6,7) (0,1,5,6,7,8) (0,1,3,5,7,8) (2,5) (1,4,8) (1,4,5,7,8) (3,5) (1,3,4,8) (0,2,3,4,5,7,8) (0,1,4,5,6,7,8) {38,59,4,35,41,34,31,46,43}"
-
-#   %{0 => 7, 1 => 6, 2 => 9, 3 => 3, 4 => 2, 5 => 1, 6 => 0, 7 => 4, 8 => 10}
-#  [6.2, 3.2, 4.2, 1.6, 13.8, 0.8, 14.2, 8.0, 12.6, 64.6],
-#    7    6    9    3     2    1     0    4    10
-
-# 0  (0,1,4,5,6,7,8)
-# 1  (0,2,3,4,5,7,8)
-# 2  (1,3,4,8)
-# 3  (3,5)
-# 4  (1,4,5,7,8)
-# 5  (1,4,8)
-# 6  (2,5)
-# 7  (0,1,3,5,7,8)
-# 8  (0,1,5,6,7,8)
-# 9  (0,1,4,6,7)
-# 10 (0,1,3,6,7)
-
-# 0     1     2     3     4     5     6     7     8
-# 0     0     0     0     0     0     0     0     0
-
-# IO.puts("Sample one: #{Day10Elixir.part_one(sample)}")
-# IO.puts("Answer one: #{Day10Elixir.part_one(data)}")
+IO.puts("Sample one: #{Day10Elixir.part_one(sample)}")
+IO.puts("Answer one: #{Day10Elixir.part_one(data)}")
 IO.puts("Sample two: #{Day10Elixir.part_two(sample)}")
-# IO.puts("Answer two: #{Day10Elixir.part_two(data)}")
-
-# Simplex.maximise([2, 3, 4, 0, 0], [[3, 2, 1, 1, 0, 10], [2, 5, 3, 0, 1, 15]], 3) |> IO.inspect()
-# Simplex.maximise([40, 30, 0, 0], [[1, 1, 1, 0, 12], [2, 1, 0, 1, 16]], 2) |> IO.inspect()
-
-# Simplex.maximise(
-#   [3, 1, 2, 0, 0, 0],
-#   [
-#     {[1, 1, 3, 1, 0, 0], :at_most, 30},
-#     {[2, 2, 5, 0, 1, 0], :at_most, 24},
-#     {[4, 1, 2, 0, 0, 1], :at_most, 36}
-#   ],
-#   3
-# )
-# |> IO.inspect()
-
-# Simplex.minimise([12, 16], [{[1, 2], :at_least, 40}, {[1, 1], :at_least, 30}], 2) |> IO.inspect()
-
-# Simplex.minimise(
-#   [1, 1, 1, 1, 1, 1],
-#   [
-#     {[0, 0, 0, 0, 1, 1], :at_least, 3},
-#     {[0, 1, 0, 0, 0, 1], :at_least, 5},
-#     {[0, 0, 1, 1, 1, 0], :at_least, 4},
-#     {[1, 1, 0, 1, 0, 0], :at_least, 7}
-#   ],
-#   6
-# )
-# |> IO.inspect()
-
-{:feasible, 20339}
-{:tried, 20000}
-{:optimal, 19893}
+IO.puts("Answer two: #{Day10Elixir.part_two(data)}")
